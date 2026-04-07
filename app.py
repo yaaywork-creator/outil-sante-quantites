@@ -110,7 +110,7 @@ DEFAULT_SECTIONS = {
 }
 
 # =========================================================
-# STYLE SOMBRE
+# STYLE
 # =========================================================
 st.markdown("""
 <style>
@@ -554,27 +554,19 @@ def get_item_weights(section_name: str, items_df: pd.DataFrame):
 
     return np.array(weights, dtype=float)
 
-# =========================================================
-# ALGO DE GÉNÉRATION RÉALISTE + CA EXACT
-# =========================================================
 def find_exact_addition(diff_cents: int, prices_cents: list[int]):
-    """
-    Trouve une combinaison entière à ajouter pour couvrir exactement diff_cents.
-    Diff petit après phase de base.
-    """
     if diff_cents == 0:
         return [0] * len(prices_cents)
 
-    max_amount = diff_cents
-    prev = [-1] * (max_amount + 1)
-    used = [-1] * (max_amount + 1)
+    prev = [-1] * (diff_cents + 1)
+    used = [-1] * (diff_cents + 1)
     prev[0] = -2
 
-    for amount in range(max_amount + 1):
+    for amount in range(diff_cents + 1):
         if prev[amount] != -1:
             for idx, p in enumerate(prices_cents):
                 nxt = amount + p
-                if nxt <= max_amount and prev[nxt] == -1:
+                if nxt <= diff_cents and prev[nxt] == -1:
                     prev[nxt] = amount
                     used[nxt] = idx
 
@@ -589,16 +581,19 @@ def find_exact_addition(diff_cents: int, prices_cents: list[int]):
         cur = prev[cur]
     return out
 
-def generate_realistic_year(section_name: str, items_df: pd.DataFrame, ca_target: float, seed: int = 42, allow_decimals: bool = False):
-    """
-    Génère des quantités annuelles réalistes:
-    - poids métier par acte
-    - quantités entières
-    - total annuel EXACT = CA cible
-    """
+# =========================================================
+# GENERATION
+# =========================================================
+def generate_realistic_year(
+    section_name: str,
+    items_df: pd.DataFrame,
+    ca_target: float,
+    seed: int = 42,
+    allow_decimals: bool = False
+):
     rng = np.random.default_rng(seed)
-
     df = items_df.copy().reset_index(drop=True)
+
     prices = df["Prix Unitaire"].astype(float).tolist()
     prices_cents = [to_cents(p) for p in prices]
     target_cents = to_cents(ca_target)
@@ -606,16 +601,8 @@ def generate_realistic_year(section_name: str, items_df: pd.DataFrame, ca_target
     if any(p <= 0 for p in prices_cents):
         raise ValueError("Tous les prix unitaires doivent être > 0.")
 
-    g = gcd_list(prices_cents)
-    if target_cents % g != 0:
-        raise ValueError(
-            f"Le CA cible {ca_target:,.2f} n'est pas atteignable exactement avec ces PU et des quantités entières. "
-            f"Le CA doit être multiple de {g/100:.2f}."
-        )
-
     weights = get_item_weights(section_name, df)
 
-    # On donne un avantage aux actes fréquents / moins chers, sans annuler le poids métier
     price_factor = np.array([1 / max(p, 1) for p in prices], dtype=float)
     price_factor = price_factor / price_factor.mean()
 
@@ -624,7 +611,6 @@ def generate_realistic_year(section_name: str, items_df: pd.DataFrame, ca_target
 
     desired_ca = blended * ca_target
 
-    # Base logique : floor pour rester <= target
     qty = []
     for desired, price in zip(desired_ca, prices):
         q = int(math.floor(desired / price))
@@ -636,12 +622,12 @@ def generate_realistic_year(section_name: str, items_df: pd.DataFrame, ca_target
     if diff_cents < 0:
         raise ValueError("Erreur interne : la base dépasse le CA cible.")
 
-    # Ajustement exact du petit écart résiduel
     add = find_exact_addition(diff_cents, prices_cents)
+
     if add is None:
-        # petite stratégie secondaire : retirer 1 unité sur une ligne non vide et retester
         solved = False
-        for j in np.argsort(prices_cents):
+        order = list(np.argsort(prices_cents))
+        for j in order:
             if qty[j] > 0:
                 qty[j] -= 1
                 new_diff = target_cents - sum(q * p for q, p in zip(qty, prices_cents))
@@ -652,79 +638,85 @@ def generate_realistic_year(section_name: str, items_df: pd.DataFrame, ca_target
                         break
                 qty[j] += 1
         if not solved:
-            raise ValueError(
-                "Impossible d'ajuster exactement le CA cible avec cette structure de prix."
-            )
+            if not allow_decimals:
+                g = gcd_list(prices_cents)
+                raise ValueError(
+                    f"Impossible d’atteindre exactement le CA cible avec des quantités entières. "
+                    f"Active l’option décimale. "
+                    f"Le pas exact minimum entre combinaisons entières est de {g/100:.2f}."
+                )
 
     if add is not None:
         qty = [q + a for q, a in zip(qty, add)]
 
-        final_cents = sum(q * p for q, p in zip(qty, prices_cents))
+    final_cents = sum(q * p for q, p in zip(qty, prices_cents))
 
-    # Si on n'arrive pas exactement en entier, on autorise un ajustement décimal léger
-    if final_cents != target_cents:
-        if not allow_decimals:
-            raise ValueError(
-                f"Le CA généré ({from_cents(final_cents):,.2f}) n’est pas exactement égal au CA cible ({ca_target:,.2f}). "
-                f"Active l’option décimale si tu veux autoriser un léger ajustement."
-            )
-        else:
-            diff_cents = target_cents - final_cents
-
-            # on ajuste sur l’acte le plus pertinent : poids élevé + PU modéré
-            adjust_idx = int(np.argmax(blended / np.array(prices)))
-            adjustment_qty = diff_cents / prices_cents[adjust_idx]
-            qty[adjust_idx] = qty[adjust_idx] + adjustment_qty  
-
-    # Répartition mensuelle logique
-    seasonality = monthly_seasonality(section_name)
+    if final_cents != target_cents and not allow_decimals:
+        raise ValueError(
+            f"Le CA généré ({from_cents(final_cents):,.2f}) n’est pas exactement égal au CA cible ({ca_target:,.2f}). "
+            f"Active l’option décimale si tu veux autoriser un léger ajustement."
+        )
 
     rows = []
+
     for i, row in df.iterrows():
         item = row["Acte / Examen"]
         price = float(row["Prix Unitaire"])
-        total_qty = int(qty[i])
+        total_qty = float(qty[i])
 
-        # légère variation par acte
-        item_profile = seasonality * rng.uniform(0.92, 1.08, size=12)
+        item_profile = monthly_seasonality(section_name) * rng.uniform(0.92, 1.08, size=12)
         item_profile = item_profile / item_profile.sum()
 
-                if not allow_decimals:
-            monthly_qty = rng.multinomial(int(round(total_qty)), item_profile)
+        if not allow_decimals:
+            monthly_qty = rng.multinomial(int(round(total_qty)), item_profile).astype(float)
         else:
-            raw_monthly = item_profile * float(total_qty)
-            monthly_qty = raw_monthly.copy()
-
-            # arrondi doux à 2 décimales
-            monthly_qty = np.round(monthly_qty, 2)
-
-            # correction pour retomber exactement sur la quantité totale
-            gap = round(float(total_qty) - float(monthly_qty.sum()), 2)
+            monthly_qty = np.round(item_profile * total_qty, 2)
+            gap = round(total_qty - float(monthly_qty.sum()), 2)
             if abs(gap) > 0:
                 monthly_qty[np.argmax(item_profile)] += gap
 
         out = {
             "Acte / Examen": item,
-            "Prix Unitaire": price,
+            "Prix Unitaire": price
         }
+
         total_ca = 0.0
+        total_qty_line = 0.0
 
         for m, q in zip(MONTHS, monthly_qty):
-            q = float(q) if allow_decimals else int(round(q))
-            ca = q * price
-            out[f"Qté {m}"] = round(q, 2) if allow_decimals else int(q)
+            q_value = round(float(q), 2) if allow_decimals else int(round(float(q)))
+            ca = q_value * price
+            out[f"Qté {m}"] = q_value
             out[f"CA {m}"] = float(ca)
             total_ca += ca
+            total_qty_line += q_value
 
-        total_qty_line = float(sum(monthly_qty)) if allow_decimals else int(round(sum(monthly_qty)))
-        out["Qté Totale"] = round(total_qty_line, 2) if allow_decimals else int(total_qty_line)
+        out["Qté Totale"] = round(total_qty_line, 2) if allow_decimals else int(round(total_qty_line))
         out["CA Total"] = float(total_ca)
         rows.append(out)
 
     detail_df = pd.DataFrame(rows)
 
-    # Vérification finale
-    total_generated = float(detail_df["CA Total"].sum())
+    total_generated = round(float(detail_df["CA Total"].sum()), 2)
+
+    if allow_decimals and round(total_generated, 2) != round(ca_target, 2):
+        diff = round(ca_target - total_generated, 2)
+        if abs(diff) > 0:
+            adjust_idx = int(np.argmax(blended / np.array(prices)))
+            adjust_price = float(df.loc[adjust_idx, "Prix Unitaire"])
+            adjustment_qty = round(diff / adjust_price, 2)
+
+            detail_df.loc[adjust_idx, "Qté Décembre"] = round(float(detail_df.loc[adjust_idx, "Qté Décembre"]) + adjustment_qty, 2)
+            detail_df.loc[adjust_idx, "CA Décembre"] = round(float(detail_df.loc[adjust_idx, "Qté Décembre"]) * adjust_price, 2)
+
+            qty_cols = [f"Qté {m}" for m in MONTHS]
+            ca_cols = [f"CA {m}" for m in MONTHS]
+
+            detail_df.loc[adjust_idx, "Qté Totale"] = round(float(detail_df.loc[adjust_idx, qty_cols].sum()), 2)
+            detail_df.loc[adjust_idx, "CA Total"] = round(float(detail_df.loc[adjust_idx, ca_cols].sum()), 2)
+
+            total_generated = round(float(detail_df["CA Total"].sum()), 2)
+
     if round(total_generated, 2) != round(ca_target, 2):
         raise ValueError(
             f"Le CA généré ({total_generated:,.2f}) n'est pas égal au CA cible ({ca_target:,.2f})."
@@ -735,9 +727,11 @@ def generate_realistic_year(section_name: str, items_df: pd.DataFrame, ca_target
 def build_monthly_summary(detail_df):
     rows = []
     for month in MONTHS:
+        qty_total = float(detail_df[f"Qté {month}"].sum())
+        qty_total = int(round(qty_total)) if abs(qty_total - round(qty_total)) < 1e-9 else round(qty_total, 2)
         rows.append({
             "Mois": month,
-            "Quantité Totale": int(detail_df[f"Qté {month}"].sum()),
+            "Quantité Totale": qty_total,
             "CA Mensuel": float(detail_df[f"CA {month}"].sum())
         })
     return pd.DataFrame(rows)
@@ -841,7 +835,7 @@ def export_excel_styled(section_name, ca_dict, all_results, all_monthly):
         ws1.append(
             ["", "TOTAL"] +
             [""] * (len(detail_df.columns) - 4) +
-            [int(detail_df["Qté Totale"].sum()), float(detail_df["CA Total"].sum())]
+            [detail_df["Qté Totale"].sum(), float(detail_df["CA Total"].sum())]
         )
         excel_apply_base_style(ws1, f"{section_name} - {y} - Détail complet", len(detail_df.columns))
         excel_format_numbers(ws1)
@@ -851,7 +845,7 @@ def export_excel_styled(section_name, ca_dict, all_results, all_monthly):
         ws2.append(monthly_df.columns.tolist())
         for row in monthly_df.itertuples(index=False, name=None):
             ws2.append(list(row))
-        ws2.append(["", "TOTAL", int(monthly_df["Quantité Totale"].sum()), float(monthly_df["CA Mensuel"].sum())])
+        ws2.append(["", "TOTAL", monthly_df["Quantité Totale"].sum(), float(monthly_df["CA Mensuel"].sum())])
         excel_apply_base_style(ws2, f"{section_name} - {y} - Synthèse mensuelle", len(monthly_df.columns))
         excel_format_numbers(ws2)
         excel_auto_width(ws2)
@@ -981,7 +975,7 @@ def export_pdf(section_name, ca_dict, all_results, all_monthly):
         recap = (
             f"CA cible : <b>{money(ca_dict[y])}</b> &nbsp;&nbsp;|&nbsp;&nbsp; "
             f"CA généré : <b>{money(detail_df['CA Total'].sum())}</b> &nbsp;&nbsp;|&nbsp;&nbsp; "
-            f"Quantité totale : <b>{int(detail_df['Qté Totale'].sum())}</b>"
+            f"Quantité totale : <b>{money(detail_df['Qté Totale'].sum())}</b>"
         )
         elements.append(Paragraph(recap, normal_style))
         elements.append(Spacer(1, 0.15 * cm))
@@ -1054,10 +1048,10 @@ st.markdown("""
         <span class="badge">Excel premium</span>
         <span class="badge">PDF structuré</span>
     </p>
-<p>
-    Clinique • Laboratoire • Centre de radiologie<br>
-    Le total annuel obtenu est ajusté pour être égal au CA annuel donné, avec priorité aux quantités entières, mais possibilité de décimales si nécessaire.
-</p>
+    <p>
+        Clinique • Laboratoire • Centre de radiologie<br>
+        Le total annuel obtenu est ajusté pour être égal au CA annuel donné, avec priorité aux quantités entières, mais possibilité de décimales si nécessaire.
+    </p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -1081,6 +1075,7 @@ selected_section = st.sidebar.radio(
     "Choisir une rubrique",
     ["Clinique", "Laboratoire", "Centre de radiologie"]
 )
+
 allow_decimals = st.sidebar.checkbox("Autoriser parfois des quantités décimales", value=False)
 seed_value = st.sidebar.number_input("Seed aléatoire", min_value=0, value=42, step=1)
 
@@ -1191,12 +1186,12 @@ with tab2:
 
                 for idx, y in enumerate(YEARS):
                     detail_df, total_generated = generate_realistic_year(
-                      section_name=selected_section,
-                      items_df=items_df,
-                      ca_target=ca_dict[y],
-                      seed=seed_value + idx,
-                      allow_decimals=allow_decimals
-)
+                        section_name=selected_section,
+                        items_df=items_df,
+                        ca_target=ca_dict[y],
+                        seed=seed_value + idx,
+                        allow_decimals=allow_decimals
+                    )
                     monthly_df = build_monthly_summary(detail_df)
 
                     all_results[y] = detail_df
