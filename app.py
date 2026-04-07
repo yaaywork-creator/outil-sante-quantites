@@ -30,7 +30,7 @@ from reportlab.platypus import (
 # CONFIG
 # =========================================================
 st.set_page_config(
-    page_title="EDDAQAQ EXPERTISES - Outil Santé",
+    page_title="EDDAQAQ EXPERTISES",
     page_icon="🏥",
     layout="wide",
     initial_sidebar_state="expanded"
