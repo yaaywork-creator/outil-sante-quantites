@@ -1041,7 +1041,7 @@ except Exception as e:
 # =========================================================
 st.markdown("""
 <div class="hero">
-    <h1>🏥 Outil Santé - Génération des Quantités</h1>
+    <h1>🏥 Génération des Quantités</h1>
     <p>
         <span class="badge">Sauvegarde durable</span>
         <span class="badge">Design sombre</span>
@@ -1049,8 +1049,7 @@ st.markdown("""
         <span class="badge">PDF structuré</span>
     </p>
     <p>
-        Clinique • Laboratoire • Centre de radiologie<br>
-        Le total annuel obtenu est ajusté pour être égal au CA annuel donné, avec priorité aux quantités entières, mais possibilité de décimales si nécessaire.
+       Chiffres d'affaires detaillés
     </p>
 </div>
 """, unsafe_allow_html=True)
