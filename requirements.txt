@@ -5,3 +5,5 @@ plotly
 openpyxl
 xlsxwriter
 python-dateutil
+reportlab
+psycopg2-binary
