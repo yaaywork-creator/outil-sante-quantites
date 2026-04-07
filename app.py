@@ -589,7 +589,7 @@ def find_exact_addition(diff_cents: int, prices_cents: list[int]):
         cur = prev[cur]
     return out
 
-def generate_realistic_year(section_name: str, items_df: pd.DataFrame, ca_target: float, seed: int = 42):
+def generate_realistic_year(section_name: str, items_df: pd.DataFrame, ca_target: float, seed: int = 42, allow_decimals: bool = False):
     """
     Génère des quantités annuelles réalistes:
     - poids métier par acte
@@ -659,11 +659,22 @@ def generate_realistic_year(section_name: str, items_df: pd.DataFrame, ca_target
     if add is not None:
         qty = [q + a for q, a in zip(qty, add)]
 
-    final_cents = sum(q * p for q, p in zip(qty, prices_cents))
+        final_cents = sum(q * p for q, p in zip(qty, prices_cents))
+
+    # Si on n'arrive pas exactement en entier, on autorise un ajustement décimal léger
     if final_cents != target_cents:
-        raise ValueError(
-            f"Le CA généré ({from_cents(final_cents):,.2f}) n’est pas exactement égal au CA cible ({ca_target:,.2f})."
-        )
+        if not allow_decimals:
+            raise ValueError(
+                f"Le CA généré ({from_cents(final_cents):,.2f}) n’est pas exactement égal au CA cible ({ca_target:,.2f}). "
+                f"Active l’option décimale si tu veux autoriser un léger ajustement."
+            )
+        else:
+            diff_cents = target_cents - final_cents
+
+            # on ajuste sur l’acte le plus pertinent : poids élevé + PU modéré
+            adjust_idx = int(np.argmax(blended / np.array(prices)))
+            adjustment_qty = diff_cents / prices_cents[adjust_idx]
+            qty[adjust_idx] = qty[adjust_idx] + adjustment_qty  
 
     # Répartition mensuelle logique
     seasonality = monthly_seasonality(section_name)
@@ -678,7 +689,19 @@ def generate_realistic_year(section_name: str, items_df: pd.DataFrame, ca_target
         item_profile = seasonality * rng.uniform(0.92, 1.08, size=12)
         item_profile = item_profile / item_profile.sum()
 
-        monthly_qty = rng.multinomial(total_qty, item_profile)
+                if not allow_decimals:
+            monthly_qty = rng.multinomial(int(round(total_qty)), item_profile)
+        else:
+            raw_monthly = item_profile * float(total_qty)
+            monthly_qty = raw_monthly.copy()
+
+            # arrondi doux à 2 décimales
+            monthly_qty = np.round(monthly_qty, 2)
+
+            # correction pour retomber exactement sur la quantité totale
+            gap = round(float(total_qty) - float(monthly_qty.sum()), 2)
+            if abs(gap) > 0:
+                monthly_qty[np.argmax(item_profile)] += gap
 
         out = {
             "Acte / Examen": item,
@@ -687,13 +710,14 @@ def generate_realistic_year(section_name: str, items_df: pd.DataFrame, ca_target
         total_ca = 0.0
 
         for m, q in zip(MONTHS, monthly_qty):
-            q = int(q)
+            q = float(q) if allow_decimals else int(round(q))
             ca = q * price
-            out[f"Qté {m}"] = q
+            out[f"Qté {m}"] = round(q, 2) if allow_decimals else int(q)
             out[f"CA {m}"] = float(ca)
             total_ca += ca
 
-        out["Qté Totale"] = int(sum(monthly_qty))
+        total_qty_line = float(sum(monthly_qty)) if allow_decimals else int(round(sum(monthly_qty)))
+        out["Qté Totale"] = round(total_qty_line, 2) if allow_decimals else int(total_qty_line)
         out["CA Total"] = float(total_ca)
         rows.append(out)
 
@@ -1030,10 +1054,10 @@ st.markdown("""
         <span class="badge">Excel premium</span>
         <span class="badge">PDF structuré</span>
     </p>
-    <p>
-        Clinique • Laboratoire • Centre de radiologie<br>
-        Le total annuel obtenu est ajusté pour être égal au CA annuel donné, avec quantités entières.
-    </p>
+<p>
+    Clinique • Laboratoire • Centre de radiologie<br>
+    Le total annuel obtenu est ajusté pour être égal au CA annuel donné, avec priorité aux quantités entières, mais possibilité de décimales si nécessaire.
+</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -1057,7 +1081,7 @@ selected_section = st.sidebar.radio(
     "Choisir une rubrique",
     ["Clinique", "Laboratoire", "Centre de radiologie"]
 )
-st.sidebar.checkbox("Quantités entières", value=True, disabled=True)
+allow_decimals = st.sidebar.checkbox("Autoriser parfois des quantités décimales", value=False)
 seed_value = st.sidebar.number_input("Seed aléatoire", min_value=0, value=42, step=1)
 
 if st.sidebar.button("Se déconnecter", use_container_width=True):
@@ -1167,11 +1191,12 @@ with tab2:
 
                 for idx, y in enumerate(YEARS):
                     detail_df, total_generated = generate_realistic_year(
-                        section_name=selected_section,
-                        items_df=items_df,
-                        ca_target=ca_dict[y],
-                        seed=seed_value + idx
-                    )
+                      section_name=selected_section,
+                      items_df=items_df,
+                      ca_target=ca_dict[y],
+                      seed=seed_value + idx,
+                      allow_decimals=allow_decimals
+)
                     monthly_df = build_monthly_summary(detail_df)
 
                     all_results[y] = detail_df
