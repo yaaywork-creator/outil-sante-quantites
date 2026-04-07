@@ -1,4 +1,5 @@
 import io
+import math
 import random
 from datetime import datetime
 
@@ -11,7 +12,6 @@ import streamlit as st
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from openpyxl.utils import get_column_letter
-from openpyxl.worksheet.table import Table as XLTable, TableStyleInfo
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
@@ -110,23 +110,17 @@ DEFAULT_SECTIONS = {
 }
 
 # =========================================================
-# STYLE SOMBRE
+# STYLE
 # =========================================================
 st.markdown("""
 <style>
 :root{
-    --bg1:#050b14;
-    --bg2:#081422;
-    --bg3:#0b1d32;
+    --bg1:#040b16;
+    --bg2:#081220;
+    --bg3:#0b1830;
     --card:#0d2037;
-    --card2:#102844;
-    --line:rgba(255,255,255,0.09);
     --txt:#f4f8fd;
     --muted:#bfd0e4;
-    --blue:#1f5b99;
-    --blue2:#2f76c0;
-    --gold:#c99a67;
-    --green:#1e8f57;
 }
 
 html, body, [class*="css"] {
@@ -138,7 +132,7 @@ html, body, [class*="css"] {
         radial-gradient(circle at top left, rgba(58,110,175,0.18), transparent 24%),
         radial-gradient(circle at top right, rgba(201,154,103,0.08), transparent 18%),
         linear-gradient(145deg, var(--bg1) 0%, var(--bg2) 40%, var(--bg3) 100%);
-    color: var(--txt);
+    color: white;
 }
 
 .block-container {
@@ -255,9 +249,23 @@ div[data-testid="stDataEditor"] {
 .stButton > button,
 .stDownloadButton > button {
     border-radius: 14px !important;
-    border: 1px solid rgba(255,255,255,0.08) !important;
+    border: 1px solid rgba(255,255,255,0.10) !important;
     font-weight: 700 !important;
-    min-height: 44px !important;
+    min-height: 46px !important;
+    background: linear-gradient(180deg, #2c5d98 0%, #234b85 100%) !important;
+    color: #ffffff !important;
+    opacity: 1 !important;
+}
+.stButton > button:hover,
+.stDownloadButton > button:hover {
+    background: linear-gradient(180deg, #3773b9 0%, #295693 100%) !important;
+    color: #ffffff !important;
+}
+.stButton > button:disabled,
+.stDownloadButton > button:disabled {
+    background: linear-gradient(180deg, #546174 0%, #455164 100%) !important;
+    color: #ffffff !important;
+    opacity: 1 !important;
 }
 
 .kpi-note {
@@ -296,13 +304,6 @@ def init_db():
         section_name TEXT NOT NULL,
         year_name TEXT NOT NULL,
         ca_target NUMERIC(18,2) NOT NULL
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS app_meta (
-        meta_key TEXT PRIMARY KEY,
-        meta_value TEXT
     )
     """)
 
@@ -400,7 +401,7 @@ def login_page():
     st.markdown("""
     <div class="hero">
         <h1>Plateforme EDDAQAQ EXPERTISES</h1>
-        <p>Connexion sécurisée à l’outil santé avec sauvegarde durable, export Excel premium et PDF structuré.</p>
+        <p>Connexion sécurisée à l’outil santé avec sauvegarde durable, Excel premium et PDF structuré.</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -463,85 +464,105 @@ def slugify_name(text: str) -> str:
         .replace("'", "")
     )
 
+def to_cents(value: float) -> int:
+    return int(round(float(value) * 100))
+
+def gcd_list(values):
+    g = 0
+    for v in values:
+        g = math.gcd(g, int(v))
+    return g
+
+def random_integer_partition(total: int, n_parts: int, rng: np.random.Generator):
+    if total <= 0:
+        return [0] * n_parts
+    probs = rng.random(n_parts)
+    probs = probs / probs.sum()
+    parts = rng.multinomial(total, probs)
+    return parts.tolist()
+
 # =========================================================
-# GÉNÉRATION
+# GÉNÉRATION EXACTE
 # =========================================================
-def generate_exact_allocation(ca_target, items_df, whole_numbers=False, seed=None):
-    if seed is not None:
-        random.seed(seed)
-        np.random.seed(seed)
+def solve_exact_integer_quantities(items_df: pd.DataFrame, ca_target: float, seed: int = 42):
+    prices_cents = [to_cents(v) for v in items_df["Prix Unitaire"].tolist()]
+    target_cents = to_cents(ca_target)
 
-    items = items_df["Acte / Examen"].tolist()
-    prices = items_df["Prix Unitaire"].tolist()
+    if any(p <= 0 for p in prices_cents):
+        raise ValueError("Tous les prix unitaires doivent être strictement supérieurs à 0.")
 
-    cells = []
-    for item, price in zip(items, prices):
-        for month in MONTHS:
-            cells.append((item, month, float(price)))
+    g = gcd_list(prices_cents)
+    if g == 0:
+        raise ValueError("Impossible de calculer le PGCD des prix.")
 
-    if not cells:
-        return pd.DataFrame(), 0.0
+    if target_cents % g != 0:
+        raise ValueError(
+            f"CA cible impossible à atteindre exactement avec des quantités entières. "
+            f"Le CA doit être multiple de {g/100:.2f}."
+        )
 
-    values = {}
-    generated_ca = 0.0
+    reduced_prices = [p // g for p in prices_cents]
+    target_units = target_cents // g
 
-    for i, (item, month, price) in enumerate(cells[:-1]):
-        remaining_cells = len(cells) - i - 1
-        remaining_ca = ca_target - generated_ca
+    prev = [-1] * (target_units + 1)
+    prev[0] = -2
 
-        if remaining_ca <= 0:
-            qty = 0.0
-        else:
-            avg_ca = remaining_ca / max(1, remaining_cells)
-            factor = random.uniform(0.35, 1.85)
-            proposed_ca = avg_ca * factor
-            qty = proposed_ca / price if price > 0 else 0.0
+    indices = list(range(len(reduced_prices)))
+    random.Random(seed).shuffle(indices)
 
-            if whole_numbers:
-                qty = max(0, int(round(qty)))
-                while qty * price > remaining_ca and qty > 0:
-                    qty -= 1
+    for amount in range(target_units + 1):
+        if prev[amount] != -1:
+            for idx in indices:
+                nxt = amount + reduced_prices[idx]
+                if nxt <= target_units and prev[nxt] == -1:
+                    prev[nxt] = idx
 
-        values[(item, month)] = qty
-        generated_ca += qty * price
+    if prev[target_units] == -1:
+        raise ValueError(
+            "Impossible d’atteindre exactement le CA cible avec les prix unitaires actuels "
+            "et des quantités entières."
+        )
 
-    last_item, last_month, last_price = cells[-1]
-    missing_ca = ca_target - generated_ca
+    qty_totals = [0] * len(reduced_prices)
+    cur = target_units
+    while cur > 0:
+        idx = prev[cur]
+        qty_totals[idx] += 1
+        cur -= reduced_prices[idx]
 
-    if last_price > 0:
-        final_qty = missing_ca / last_price
-        if whole_numbers:
-            final_qty = max(0, int(round(final_qty)))
-        elif final_qty < 0:
-            final_qty = 0.0
-    else:
-        final_qty = 0.0
-
-    values[(last_item, last_month)] = final_qty
-
+    rng = np.random.default_rng(seed)
     rows = []
-    for item, price in zip(items, prices):
-        row = {
-            "Acte / Examen": item,
-            "Prix Unitaire": float(price),
+
+    for i, (_, row) in enumerate(items_df.iterrows()):
+        item_name = row["Acte / Examen"]
+        price = float(row["Prix Unitaire"])
+        total_qty = int(qty_totals[i])
+        monthly_qty = random_integer_partition(total_qty, 12, rng)
+
+        out = {
+            "Acte / Examen": item_name,
+            "Prix Unitaire": price
         }
-        total_qty = 0.0
         total_ca = 0.0
 
-        for month in MONTHS:
-            qty = values.get((item, month), 0.0)
+        for month, qty in zip(MONTHS, monthly_qty):
             ca = qty * price
-            row[f"Qté {month}"] = qty
-            row[f"CA {month}"] = ca
-            total_qty += qty
+            out[f"Qté {month}"] = int(qty)
+            out[f"CA {month}"] = float(ca)
             total_ca += ca
 
-        row["Qté Totale"] = total_qty
-        row["CA Total"] = total_ca
-        rows.append(row)
+        out["Qté Totale"] = int(sum(monthly_qty))
+        out["CA Total"] = float(total_ca)
+        rows.append(out)
 
     detail_df = pd.DataFrame(rows)
     total_generated = float(detail_df["CA Total"].sum()) if not detail_df.empty else 0.0
+
+    if round(total_generated, 2) != round(float(ca_target), 2):
+        raise ValueError(
+            f"Le CA généré ({total_generated}) n’est pas exactement égal au CA cible ({ca_target})."
+        )
+
     return detail_df, total_generated
 
 def build_monthly_summary(detail_df):
@@ -549,101 +570,75 @@ def build_monthly_summary(detail_df):
     for month in MONTHS:
         rows.append({
             "Mois": month,
-            "Quantité Totale": float(detail_df[f"Qté {month}"].sum()),
+            "Quantité Totale": int(detail_df[f"Qté {month}"].sum()),
             "CA Mensuel": float(detail_df[f"CA {month}"].sum())
         })
     return pd.DataFrame(rows)
 
 # =========================================================
-# EXCEL PREMIUM
+# EXCEL
 # =========================================================
 def excel_apply_base_style(ws, title, max_col):
     navy = PatternFill("solid", fgColor="081A32")
     blue = PatternFill("solid", fgColor="123A64")
-    soft_blue = PatternFill("solid", fgColor="DDEAF7")
-    soft_cream = PatternFill("solid", fgColor="F8F5EF")
-    total_fill = PatternFill("solid", fgColor="E4F1DE")
-    accent_fill = PatternFill("solid", fgColor="E7C19B")
+    cream = PatternFill("solid", fgColor="F8F5EF")
+    light_blue = PatternFill("solid", fgColor="EAF2FB")
+    total_fill = PatternFill("solid", fgColor="E2F0D9")
 
-    white_title_font = Font(name="Aptos", size=17, bold=True, color="FFFFFF")
-    white_header_font = Font(name="Aptos", size=11, bold=True, color="FFFFFF")
-    body_font = Font(name="Aptos", size=10, color="000000")
-    bold_font = Font(name="Aptos", size=10, bold=True, color="000000")
+    white_title_font = Font(name="Calibri", size=16, bold=True, color="FFFFFF")
+    white_header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    body_font = Font(name="Calibri", size=10, color="000000")
+    bold_font = Font(name="Calibri", size=10, bold=True, color="000000")
 
-    thin = Side(style="thin", color="D4D9E1")
+    thin = Side(style="thin", color="D9E1F2")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col)
-    c = ws.cell(row=1, column=1, value=title)
-    c.fill = navy
-    c.font = white_title_font
-    c.alignment = Alignment(horizontal="center", vertical="center")
-    ws.row_dimensions[1].height = 28
+    cell = ws.cell(row=1, column=1, value=title)
+    cell.fill = navy
+    cell.font = white_title_font
+    cell.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 26
 
-    for cell in ws[2]:
-        cell.fill = blue
-        cell.font = white_header_font
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        cell.border = border
+    for c in ws[2]:
+        c.fill = blue
+        c.font = white_header_font
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.border = border
 
-    for row_idx, row in enumerate(ws.iter_rows(min_row=3, max_row=ws.max_row, min_col=1, max_col=max_col), start=3):
-        for cell in row:
-            cell.fill = soft_cream if row_idx % 2 == 1 else soft_blue
+    for r in range(3, ws.max_row + 1):
+        for c in range(1, max_col + 1):
+            cell = ws.cell(r, c)
+            cell.fill = cream if r % 2 == 1 else light_blue
             cell.font = body_font
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             cell.border = border
 
-    if ws.max_row >= 3:
-        last_first_cell = str(ws.cell(ws.max_row, 1).value or "").lower()
-        last_second_cell = str(ws.cell(ws.max_row, 2).value or "").lower()
-        if "total" in last_first_cell or "total" in last_second_cell:
-            for cell in ws[ws.max_row]:
-                cell.fill = total_fill
-                cell.font = bold_font
-                cell.border = border
+    last_row_text_1 = str(ws.cell(ws.max_row, 1).value or "").lower()
+    last_row_text_2 = str(ws.cell(ws.max_row, 2).value or "").lower()
+    if "total" in last_row_text_1 or "total" in last_row_text_2:
+        for c in range(1, max_col + 1):
+            cell = ws.cell(ws.max_row, c)
+            cell.fill = total_fill
+            cell.font = bold_font
+            cell.border = border
 
     ws.freeze_panes = "A3"
-
-    for row in ws.iter_rows(min_row=3, max_row=ws.max_row):
-        for cell in row:
-            if isinstance(cell.value, str) and len(cell.value) > 18:
-                cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
-
-    for r in range(2, ws.max_row + 1):
-        ws.cell(r, max_col).fill = accent_fill if r == 2 else ws.cell(r, max_col).fill
 
 def excel_auto_width(ws):
     for col in ws.columns:
         max_len = 0
-        letter = get_column_letter(col[0].column)
+        col_letter = get_column_letter(col[0].column)
         for cell in col:
-            val = "" if cell.value is None else str(cell.value)
-            max_len = max(max_len, len(val))
-        ws.column_dimensions[letter].width = min(max(max_len + 2, 12), 28)
+            value = "" if cell.value is None else str(cell.value)
+            max_len = max(max_len, len(value))
+        ws.column_dimensions[col_letter].width = min(max(max_len + 2, 12), 28)
 
 def excel_format_numbers(ws):
     for row in ws.iter_rows():
         for cell in row:
             if isinstance(cell.value, (int, float, np.floating)):
                 cell.number_format = '#,##0.00'
-
-def add_excel_table(ws, max_col):
-    if ws.max_row >= 2 and max_col >= 2:
-        ref = f"A2:{get_column_letter(max_col)}{ws.max_row}"
-        table_name = f"Table_{ws.title[:20].replace(' ', '_')}"
-        try:
-            tab = XLTable(displayName=table_name, ref=ref)
-            style = TableStyleInfo(
-                name="TableStyleMedium2",
-                showFirstColumn=False,
-                showLastColumn=False,
-                showRowStripes=False,
-                showColumnStripes=False
-            )
-            tab.tableStyleInfo = style
-            ws.add_table(tab)
-        except Exception:
-            pass
 
 def export_excel_styled(section_name, ca_dict, all_results, all_monthly):
     wb = Workbook()
@@ -654,15 +649,23 @@ def export_excel_styled(section_name, ca_dict, all_results, all_monthly):
     for i, y in enumerate(YEARS, start=1):
         ws0.append([i, y, float(ca_dict[y])])
     ws0.append(["", "TOTAL", float(sum(ca_dict.values()))])
-
     excel_apply_base_style(ws0, f"{section_name} - CA cible", 3)
     excel_format_numbers(ws0)
     excel_auto_width(ws0)
-    add_excel_table(ws0, 3)
+
+    ws_global = wb.create_sheet(title="Synthese_Globale")
+    ws_global.append(["N°", "Année", "CA cible", "CA généré", "Écart"])
+    for i, y in enumerate(YEARS, start=1):
+        ca_gen = float(all_results[y]["CA Total"].sum())
+        ws_global.append([i, y, float(ca_dict[y]), ca_gen, ca_gen - float(ca_dict[y])])
+    ws_global.append(["", "TOTAL", float(sum(ca_dict.values())), float(sum(float(all_results[y]['CA Total'].sum()) for y in YEARS)), 0.0])
+    excel_apply_base_style(ws_global, f"{section_name} - Synthèse globale", 5)
+    excel_format_numbers(ws_global)
+    excel_auto_width(ws_global)
 
     for y in YEARS:
-        detail_df = add_line_numbers(all_results[y])
-        monthly_df = add_line_numbers(all_monthly[y])
+        detail_df = add_line_numbers(all_results[y]).copy()
+        monthly_df = add_line_numbers(all_monthly[y]).copy()
 
         ws1 = wb.create_sheet(title=y.replace(" ", "_")[:31])
         ws1.append(detail_df.columns.tolist())
@@ -671,34 +674,20 @@ def export_excel_styled(section_name, ca_dict, all_results, all_monthly):
         ws1.append(
             ["", "TOTAL"] +
             [""] * (len(detail_df.columns) - 4) +
-            [float(detail_df["Qté Totale"].sum()), float(detail_df["CA Total"].sum())]
+            [int(detail_df["Qté Totale"].sum()), float(detail_df["CA Total"].sum())]
         )
         excel_apply_base_style(ws1, f"{section_name} - {y} - Détail complet", len(detail_df.columns))
         excel_format_numbers(ws1)
         excel_auto_width(ws1)
-        add_excel_table(ws1, len(detail_df.columns))
 
         ws2 = wb.create_sheet(title=(y.replace(" ", "_") + "_Mensuel")[:31])
         ws2.append(monthly_df.columns.tolist())
         for row in monthly_df.itertuples(index=False, name=None):
             ws2.append(list(row))
-        ws2.append(["", "TOTAL", float(monthly_df["Quantité Totale"].sum()), float(monthly_df["CA Mensuel"].sum())])
+        ws2.append(["", "TOTAL", int(monthly_df["Quantité Totale"].sum()), float(monthly_df["CA Mensuel"].sum())])
         excel_apply_base_style(ws2, f"{section_name} - {y} - Synthèse mensuelle", len(monthly_df.columns))
         excel_format_numbers(ws2)
         excel_auto_width(ws2)
-        add_excel_table(ws2, len(monthly_df.columns))
-
-    ws_global = wb.create_sheet(title="Synthese_Globale")
-    ws_global.append(["N°", "Année", "CA cible", "CA généré", "Écart"])
-    for idx, y in enumerate(YEARS, start=1):
-        ca_gen = float(all_results[y]["CA Total"].sum())
-        ws_global.append([idx, y, float(ca_dict[y]), ca_gen, ca_gen - float(ca_dict[y])])
-    ws_global.append(["", "TOTAL", float(sum(ca_dict.values())), float(sum(float(all_results[y]['CA Total'].sum()) for y in YEARS)), 0.0])
-
-    excel_apply_base_style(ws_global, f"{section_name} - Synthèse globale", 5)
-    excel_format_numbers(ws_global)
-    excel_auto_width(ws_global)
-    add_excel_table(ws_global, 5)
 
     output = io.BytesIO()
     wb.save(output)
@@ -706,7 +695,7 @@ def export_excel_styled(section_name, ca_dict, all_results, all_monthly):
     return output
 
 # =========================================================
-# PDF PREMIUM
+# PDF
 # =========================================================
 def dataframe_to_pdf_data(df):
     temp = df.copy()
@@ -761,7 +750,7 @@ def export_pdf(section_name, ca_dict, all_results, all_monthly):
         "title_style",
         parent=styles["Title"],
         fontName="Helvetica-Bold",
-        fontSize=19,
+        fontSize=18,
         textColor=colors.HexColor("#081A32"),
         spaceAfter=8,
     )
@@ -793,7 +782,7 @@ def export_pdf(section_name, ca_dict, all_results, all_monthly):
 
     elements = []
     elements.append(Paragraph("EDDAQAQ EXPERTISES", title_style))
-    elements.append(Paragraph(f"Rapport structuré de génération - {section_name}", sub_style))
+    elements.append(Paragraph(f"Rapport structuré - {section_name}", sub_style))
     elements.append(Paragraph(f"Généré le {datetime.now().strftime('%d/%m/%Y à %H:%M')}", normal_style))
     elements.append(Spacer(1, 0.25 * cm))
 
@@ -802,7 +791,7 @@ def export_pdf(section_name, ca_dict, all_results, all_monthly):
         "Année": YEARS,
         "CA cible": [float(ca_dict[y]) for y in YEARS]
     })
-    elements.append(Paragraph("1. Chiffre d’affaires cible par année", sub_style))
+    elements.append(Paragraph("1. CA cible par année", sub_style))
     elements.append(build_pdf_table(ca_df, header_color="#081A32", body_color="#F7F4EF", font_size=8.8))
     elements.append(Spacer(1, 0.35 * cm))
 
@@ -822,37 +811,37 @@ def export_pdf(section_name, ca_dict, all_results, all_monthly):
         monthly_df = add_line_numbers(all_monthly[y]).copy()
 
         elements.append(Paragraph(f"{y} - Synthèse", sub_style))
-        recap_text = (
+        recap = (
             f"CA cible : <b>{money(ca_dict[y])}</b> &nbsp;&nbsp;|&nbsp;&nbsp; "
             f"CA généré : <b>{money(detail_df['CA Total'].sum())}</b> &nbsp;&nbsp;|&nbsp;&nbsp; "
-            f"Quantité totale : <b>{money(detail_df['Qté Totale'].sum())}</b>"
+            f"Quantité totale : <b>{int(detail_df['Qté Totale'].sum())}</b>"
         )
-        elements.append(Paragraph(recap_text, normal_style))
+        elements.append(Paragraph(recap, normal_style))
         elements.append(Spacer(1, 0.15 * cm))
 
         monthly_table = build_pdf_table(
             monthly_df,
             header_color="#123A64",
             body_color="#F7F4EF",
-            font_size=8.6,
-            col_widths=[1.0 * cm, 5.4 * cm, 4.2 * cm, 4.3 * cm]
+            font_size=8.4,
+            col_widths=[1.0 * cm, 5.6 * cm, 4.0 * cm, 4.5 * cm]
         )
         elements.append(Paragraph("Synthèse mensuelle", small_style))
         elements.append(monthly_table)
         elements.append(Spacer(1, 0.25 * cm))
 
-        detail_columns = ["N°", "Acte / Examen", "Prix Unitaire"] + [f"Qté {m}" for m in MONTHS] + ["Qté Totale", "CA Total"]
-        detail_pdf_df = detail_df[detail_columns].copy()
-
+        detail_cols = ["N°", "Acte / Examen", "Prix Unitaire"] + [f"Qté {m}" for m in MONTHS] + ["Qté Totale", "CA Total"]
+        detail_pdf_df = detail_df[detail_cols].copy()
         chunks = split_dataframe_for_pdf(detail_pdf_df, max_rows=12)
+
         for idx_chunk, chunk in enumerate(chunks, start=1):
-            if idx_chunk == 1:
-                elements.append(Paragraph("Détail complet des lignes", small_style))
-            else:
+            if idx_chunk > 1:
                 elements.append(PageBreak())
                 elements.append(Paragraph(f"{y} - Détail complet (suite {idx_chunk})", sub_style))
+            else:
+                elements.append(Paragraph("Détail complet des lignes", small_style))
 
-            col_widths = [0.8 * cm, 4.6 * cm, 1.8 * cm] + [1.15 * cm] * 12 + [1.6 * cm, 2.0 * cm]
+            col_widths = [0.8 * cm, 4.6 * cm, 1.7 * cm] + [1.1 * cm] * 12 + [1.5 * cm, 2.0 * cm]
             detail_table = build_pdf_table(
                 chunk,
                 header_color="#C99A67",
@@ -900,7 +889,7 @@ st.markdown("""
     </p>
     <p>
         Clinique • Laboratoire • Centre de radiologie<br>
-        Saisis les CA sur 5 années, les actes et les prix unitaires, puis génère automatiquement les quantités mensuelles.
+        Saisis les CA sur 5 années, les actes et les prix unitaires, puis génère automatiquement des quantités entières.
     </p>
 </div>
 """, unsafe_allow_html=True)
@@ -925,7 +914,8 @@ selected_section = st.sidebar.radio(
     "Choisir une rubrique",
     ["Clinique", "Laboratoire", "Centre de radiologie"]
 )
-whole_numbers = st.sidebar.checkbox("Quantités plutôt entières", value=True)
+
+st.sidebar.checkbox("Quantités entières", value=True, disabled=True)
 seed_value = st.sidebar.number_input("Seed aléatoire", min_value=0, value=42, step=1)
 
 if st.sidebar.button("Se déconnecter", use_container_width=True):
@@ -951,7 +941,7 @@ with tab1:
     with left:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown(f'<div class="section-title">CA cible - {selected_section}</div>', unsafe_allow_html=True)
-        st.markdown('<div class="small-text">Modifie les objectifs de chiffre d’affaires puis clique sur Enregistrer.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="small-text">Modifie les objectifs puis clique sur Enregistrer.</div>', unsafe_allow_html=True)
 
         edited_ca = {}
         for y in YEARS:
@@ -967,7 +957,7 @@ with tab1:
     with right:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown(f'<div class="section-title">Actes / Examens - {selected_section}</div>', unsafe_allow_html=True)
-        st.markdown('<div class="small-text">Tu peux ajouter, modifier ou supprimer des lignes. Les changements restent enregistrés si tu cliques sur le bouton d’enregistrement.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="small-text">Tu peux ajouter, modifier ou supprimer des lignes.</div>', unsafe_allow_html=True)
 
         edited_df = st.data_editor(
             add_line_numbers(section_items),
@@ -990,11 +980,12 @@ with tab1:
                 if to_save.empty:
                     st.error("Ajoute au moins une ligne avant d’enregistrer.")
                 elif (to_save["Prix Unitaire"] <= 0).any():
-                    st.error("Tous les prix unitaires doivent être strictement supérieurs à 0.")
+                    st.error("Tous les prix unitaires doivent être > 0.")
                 else:
                     save_section_items(selected_section, to_save)
                     save_section_ca(selected_section, edited_ca)
-                    st.success(f"Les paramètres de la rubrique '{selected_section}' ont bien été enregistrés durablement.")
+                    st.success(f"Les paramètres de '{selected_section}' ont bien été enregistrés.")
+                    st.rerun()
             except Exception as e:
                 st.error(f"Erreur pendant l’enregistrement : {e}")
 
@@ -1008,7 +999,7 @@ with tab1:
                 df_default = pd.DataFrame(DEFAULT_SECTIONS[selected_section], columns=["Acte / Examen", "Prix Unitaire"])
                 save_section_items(selected_section, df_default)
                 save_section_ca(selected_section, DEFAULT_CA.copy())
-                st.success("Les valeurs par défaut ont été restaurées.")
+                st.success("Valeurs par défaut restaurées.")
                 st.rerun()
             except Exception as e:
                 st.error(f"Erreur pendant la restauration : {e}")
@@ -1016,7 +1007,7 @@ with tab1:
 with tab2:
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown(f'<div class="section-title">Génération - {selected_section}</div>', unsafe_allow_html=True)
-    st.markdown('<div class="small-text">La génération prend les valeurs enregistrées dans la base.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="small-text">La génération se fait avec quantités entières et CA exact si possible.</div>', unsafe_allow_html=True)
 
     if st.button("⚙️ Générer les quantités", type="primary", use_container_width=True):
         try:
@@ -1033,10 +1024,9 @@ with tab2:
                 controls = []
 
                 for idx, y in enumerate(YEARS):
-                    detail_df, total_generated = generate_exact_allocation(
-                        ca_target=ca_dict[y],
+                    detail_df, total_generated = solve_exact_integer_quantities(
                         items_df=items_df,
-                        whole_numbers=whole_numbers,
+                        ca_target=ca_dict[y],
                         seed=seed_value + idx
                     )
                     monthly_df = build_monthly_summary(detail_df)
@@ -1067,7 +1057,8 @@ with tab3:
     if results_key not in st.session_state:
         st.info("Génère d’abord les résultats.")
     else:
-        controls_df = format_df_display(st.session_state[controls_key])
+        controls_df = format_df_display(st.session_state[controls_key]).copy()
+        controls_df = add_line_numbers(controls_df)
         all_results = st.session_state[results_key]
         all_monthly = st.session_state[monthly_key]
 
@@ -1142,7 +1133,7 @@ with tab4:
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown('<div class="section-title">Export premium</div>', unsafe_allow_html=True)
-    st.markdown('<div class="small-text">Télécharge un Excel bien présenté et un PDF structuré complet avec détail des lignes.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="small-text">Télécharge un Excel structuré et un PDF détaillé.</div>', unsafe_allow_html=True)
 
     if results_key not in st.session_state:
         st.info("Génère d’abord les résultats.")
@@ -1176,7 +1167,7 @@ with tab4:
             st.markdown(
                 f"""
                 <div class="kpi-note">
-                    Export prêt pour <b>{selected_section}</b> : synthèse globale, synthèse mensuelle, détail complet et présentation améliorée.
+                    Export prêt pour <b>{selected_section}</b> : synthèse globale, synthèse mensuelle et détail complet.
                 </div>
                 """,
                 unsafe_allow_html=True
