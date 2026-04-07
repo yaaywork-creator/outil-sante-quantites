@@ -47,11 +47,11 @@ MONTHS = [
 YEARS = ["Année 1", "Année 2", "Année 3", "Année 4", "Année 5"]
 
 DEFAULT_CA = {
-    "Année 1": 4000000.0,
-    "Année 2": 5000000.0,
-    "Année 3": 6000000.0,
-    "Année 4": 7200000.0,
-    "Année 5": 7920000.0,
+    "Année 1": 4_000_000.0,
+    "Année 2": 5_000_000.0,
+    "Année 3": 6_000_000.0,
+    "Année 4": 7_200_000.0,
+    "Année 5": 7_920_000.0,
 }
 
 DEFAULT_SECTIONS = {
@@ -110,7 +110,7 @@ DEFAULT_SECTIONS = {
 }
 
 # =========================================================
-# STYLE
+# STYLE SOMBRE
 # =========================================================
 st.markdown("""
 <style>
@@ -120,7 +120,6 @@ st.markdown("""
     --bg3:#0b1830;
     --card:#0d2037;
     --txt:#f4f8fd;
-    --muted:#bfd0e4;
 }
 
 html, body, [class*="css"] {
@@ -256,14 +255,16 @@ div[data-testid="stDataEditor"] {
     color: #ffffff !important;
     opacity: 1 !important;
 }
+
 .stButton > button:hover,
 .stDownloadButton > button:hover {
     background: linear-gradient(180deg, #3773b9 0%, #295693 100%) !important;
     color: #ffffff !important;
 }
+
 .stButton > button:disabled,
 .stDownloadButton > button:disabled {
-    background: linear-gradient(180deg, #546174 0%, #455164 100%) !important;
+    background: linear-gradient(180deg, #556479 0%, #4a566b 100%) !important;
     color: #ffffff !important;
     opacity: 1 !important;
 }
@@ -464,8 +465,11 @@ def slugify_name(text: str) -> str:
         .replace("'", "")
     )
 
-def to_cents(value: float) -> int:
-    return int(round(float(value) * 100))
+def to_cents(x: float) -> int:
+    return int(round(float(x) * 100))
+
+def from_cents(x: int) -> float:
+    return x / 100.0
 
 def gcd_list(values):
     g = 0
@@ -473,82 +477,220 @@ def gcd_list(values):
         g = math.gcd(g, int(v))
     return g
 
-def random_integer_partition(total: int, n_parts: int, rng: np.random.Generator):
-    if total <= 0:
-        return [0] * n_parts
-    probs = rng.random(n_parts)
-    probs = probs / probs.sum()
-    parts = rng.multinomial(total, probs)
-    return parts.tolist()
+def monthly_seasonality(section_name: str):
+    if section_name == "Clinique":
+        arr = np.array([0.083, 0.078, 0.084, 0.085, 0.086, 0.084, 0.079, 0.077, 0.084, 0.086, 0.087, 0.087], dtype=float)
+    elif section_name == "Laboratoire":
+        arr = np.array([0.084, 0.079, 0.084, 0.083, 0.084, 0.083, 0.081, 0.079, 0.083, 0.086, 0.087, 0.087], dtype=float)
+    else:
+        arr = np.array([0.082, 0.078, 0.083, 0.084, 0.085, 0.084, 0.081, 0.079, 0.084, 0.086, 0.087, 0.087], dtype=float)
+    return arr / arr.sum()
+
+def get_item_weights(section_name: str, items_df: pd.DataFrame):
+    weights = []
+    names = items_df["Acte / Examen"].astype(str).tolist()
+
+    if section_name == "Clinique":
+        manual = {
+            "Consultation générale": 1.8,
+            "Consultation spécialisée": 1.4,
+            "Acte infirmier": 1.8,
+            "Pansement spécialisé": 1.5,
+            "Hospitalisation Normale": 1.1,
+            "Hôpital de jour": 1.2,
+            "Lits d’urgences": 1.1,
+            "Salle de réveil": 0.8,
+            "Chambre individuelle": 0.7,
+            "Petite chirurgie": 1.0,
+            "Soins intensifs": 0.45,
+            "Réanimation": 0.25,
+        }
+        for n in names:
+            weights.append(manual.get(n, 1.0))
+    elif section_name == "Laboratoire":
+        manual = {
+            "Glycémie": 1.8,
+            "NFS": 1.8,
+            "CRP": 1.4,
+            "ECBU": 1.2,
+            "HbA1c": 1.0,
+            "Bilan rénal": 1.0,
+            "Ionogramme": 0.9,
+            "TSH": 0.8,
+            "Ferritine": 0.75,
+            "Vitamine D": 0.55,
+            "Sérologie": 0.65,
+            "Bilan hépatique": 0.8,
+            "Bilan lipidique": 0.85,
+        }
+        for n in names:
+            weights.append(manual.get(n, 1.0))
+    else:
+        manual = {
+            "RX PHOTO": 1.7,
+            "RX(face)": 1.3,
+            "RX face et profil": 1.15,
+            "Echo Abdo": 1.0,
+            "Echo parties molles": 0.9,
+            "Echo cervical": 0.85,
+            "Echo mammaire": 0.85,
+            "Mammo": 0.8,
+            "Mammo+Echo": 0.7,
+            "Scanner cérébral": 0.55,
+            "Scanner abdominal": 0.55,
+            "TDM FACE": 0.45,
+            "TDM SINUS": 0.45,
+            "TDM cervical/dorsal/lombaire": 0.40,
+            "TDM bassin": 0.40,
+            "TDM hanche/genou/épaule/coude": 0.38,
+            "Scanner thoracique": 0.48,
+            "TDM rocher": 0.25,
+            "Scanner abdomino pelvien": 0.30,
+            "Scanner thoraco abdomino pelvien": 0.18,
+            "Angio scanner": 0.14,
+        }
+        for n in names:
+            weights.append(manual.get(n, 1.0))
+
+    return np.array(weights, dtype=float)
 
 # =========================================================
-# GÉNÉRATION EXACTE
+# ALGO DE GÉNÉRATION RÉALISTE + CA EXACT
 # =========================================================
-def solve_exact_integer_quantities(items_df: pd.DataFrame, ca_target: float, seed: int = 42):
-    prices_cents = [to_cents(v) for v in items_df["Prix Unitaire"].tolist()]
+def find_exact_addition(diff_cents: int, prices_cents: list[int]):
+    """
+    Trouve une combinaison entière à ajouter pour couvrir exactement diff_cents.
+    Diff petit après phase de base.
+    """
+    if diff_cents == 0:
+        return [0] * len(prices_cents)
+
+    max_amount = diff_cents
+    prev = [-1] * (max_amount + 1)
+    used = [-1] * (max_amount + 1)
+    prev[0] = -2
+
+    for amount in range(max_amount + 1):
+        if prev[amount] != -1:
+            for idx, p in enumerate(prices_cents):
+                nxt = amount + p
+                if nxt <= max_amount and prev[nxt] == -1:
+                    prev[nxt] = amount
+                    used[nxt] = idx
+
+    if prev[diff_cents] == -1:
+        return None
+
+    out = [0] * len(prices_cents)
+    cur = diff_cents
+    while cur > 0:
+        idx = used[cur]
+        out[idx] += 1
+        cur = prev[cur]
+    return out
+
+def generate_realistic_year(section_name: str, items_df: pd.DataFrame, ca_target: float, seed: int = 42):
+    """
+    Génère des quantités annuelles réalistes:
+    - poids métier par acte
+    - quantités entières
+    - total annuel EXACT = CA cible
+    """
+    rng = np.random.default_rng(seed)
+
+    df = items_df.copy().reset_index(drop=True)
+    prices = df["Prix Unitaire"].astype(float).tolist()
+    prices_cents = [to_cents(p) for p in prices]
     target_cents = to_cents(ca_target)
 
     if any(p <= 0 for p in prices_cents):
-        raise ValueError("Tous les prix unitaires doivent être strictement supérieurs à 0.")
+        raise ValueError("Tous les prix unitaires doivent être > 0.")
 
     g = gcd_list(prices_cents)
-    if g == 0:
-        raise ValueError("Impossible de calculer le PGCD des prix.")
-
     if target_cents % g != 0:
         raise ValueError(
-            f"CA cible impossible à atteindre exactement avec des quantités entières. "
+            f"Le CA cible {ca_target:,.2f} n'est pas atteignable exactement avec ces PU et des quantités entières. "
             f"Le CA doit être multiple de {g/100:.2f}."
         )
 
-    reduced_prices = [p // g for p in prices_cents]
-    target_units = target_cents // g
+    weights = get_item_weights(section_name, df)
 
-    prev = [-1] * (target_units + 1)
-    prev[0] = -2
+    # On donne un avantage aux actes fréquents / moins chers, sans annuler le poids métier
+    price_factor = np.array([1 / max(p, 1) for p in prices], dtype=float)
+    price_factor = price_factor / price_factor.mean()
 
-    indices = list(range(len(reduced_prices)))
-    random.Random(seed).shuffle(indices)
+    blended = weights * (price_factor ** 0.35)
+    blended = blended / blended.sum()
 
-    for amount in range(target_units + 1):
-        if prev[amount] != -1:
-            for idx in indices:
-                nxt = amount + reduced_prices[idx]
-                if nxt <= target_units and prev[nxt] == -1:
-                    prev[nxt] = idx
+    desired_ca = blended * ca_target
 
-    if prev[target_units] == -1:
+    # Base logique : floor pour rester <= target
+    qty = []
+    for desired, price in zip(desired_ca, prices):
+        q = int(math.floor(desired / price))
+        qty.append(max(0, q))
+
+    current_cents = sum(q * p for q, p in zip(qty, prices_cents))
+    diff_cents = target_cents - current_cents
+
+    if diff_cents < 0:
+        raise ValueError("Erreur interne : la base dépasse le CA cible.")
+
+    # Ajustement exact du petit écart résiduel
+    add = find_exact_addition(diff_cents, prices_cents)
+    if add is None:
+        # petite stratégie secondaire : retirer 1 unité sur une ligne non vide et retester
+        solved = False
+        for j in np.argsort(prices_cents):
+            if qty[j] > 0:
+                qty[j] -= 1
+                new_diff = target_cents - sum(q * p for q, p in zip(qty, prices_cents))
+                if new_diff >= 0:
+                    add = find_exact_addition(new_diff, prices_cents)
+                    if add is not None:
+                        solved = True
+                        break
+                qty[j] += 1
+        if not solved:
+            raise ValueError(
+                "Impossible d'ajuster exactement le CA cible avec cette structure de prix."
+            )
+
+    if add is not None:
+        qty = [q + a for q, a in zip(qty, add)]
+
+    final_cents = sum(q * p for q, p in zip(qty, prices_cents))
+    if final_cents != target_cents:
         raise ValueError(
-            "Impossible d’atteindre exactement le CA cible avec les prix unitaires actuels "
-            "et des quantités entières."
+            f"Le CA généré ({from_cents(final_cents):,.2f}) n’est pas exactement égal au CA cible ({ca_target:,.2f})."
         )
 
-    qty_totals = [0] * len(reduced_prices)
-    cur = target_units
-    while cur > 0:
-        idx = prev[cur]
-        qty_totals[idx] += 1
-        cur -= reduced_prices[idx]
+    # Répartition mensuelle logique
+    seasonality = monthly_seasonality(section_name)
 
-    rng = np.random.default_rng(seed)
     rows = []
-
-    for i, (_, row) in enumerate(items_df.iterrows()):
-        item_name = row["Acte / Examen"]
+    for i, row in df.iterrows():
+        item = row["Acte / Examen"]
         price = float(row["Prix Unitaire"])
-        total_qty = int(qty_totals[i])
-        monthly_qty = random_integer_partition(total_qty, 12, rng)
+        total_qty = int(qty[i])
+
+        # légère variation par acte
+        item_profile = seasonality * rng.uniform(0.92, 1.08, size=12)
+        item_profile = item_profile / item_profile.sum()
+
+        monthly_qty = rng.multinomial(total_qty, item_profile)
 
         out = {
-            "Acte / Examen": item_name,
-            "Prix Unitaire": price
+            "Acte / Examen": item,
+            "Prix Unitaire": price,
         }
         total_ca = 0.0
 
-        for month, qty in zip(MONTHS, monthly_qty):
-            ca = qty * price
-            out[f"Qté {month}"] = int(qty)
-            out[f"CA {month}"] = float(ca)
+        for m, q in zip(MONTHS, monthly_qty):
+            q = int(q)
+            ca = q * price
+            out[f"Qté {m}"] = q
+            out[f"CA {m}"] = float(ca)
             total_ca += ca
 
         out["Qté Totale"] = int(sum(monthly_qty))
@@ -556,11 +698,12 @@ def solve_exact_integer_quantities(items_df: pd.DataFrame, ca_target: float, see
         rows.append(out)
 
     detail_df = pd.DataFrame(rows)
-    total_generated = float(detail_df["CA Total"].sum()) if not detail_df.empty else 0.0
 
-    if round(total_generated, 2) != round(float(ca_target), 2):
+    # Vérification finale
+    total_generated = float(detail_df["CA Total"].sum())
+    if round(total_generated, 2) != round(ca_target, 2):
         raise ValueError(
-            f"Le CA généré ({total_generated}) n’est pas exactement égal au CA cible ({ca_target})."
+            f"Le CA généré ({total_generated:,.2f}) n'est pas égal au CA cible ({ca_target:,.2f})."
         )
 
     return detail_df, total_generated
@@ -860,7 +1003,7 @@ def export_pdf(section_name, ca_dict, all_results, all_monthly):
     return output
 
 # =========================================================
-# INIT SESSION
+# SESSION
 # =========================================================
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
@@ -889,7 +1032,7 @@ st.markdown("""
     </p>
     <p>
         Clinique • Laboratoire • Centre de radiologie<br>
-        Saisis les CA sur 5 années, les actes et les prix unitaires, puis génère automatiquement des quantités entières.
+        Le total annuel obtenu est ajusté pour être égal au CA annuel donné, avec quantités entières.
     </p>
 </div>
 """, unsafe_allow_html=True)
@@ -914,7 +1057,6 @@ selected_section = st.sidebar.radio(
     "Choisir une rubrique",
     ["Clinique", "Laboratoire", "Centre de radiologie"]
 )
-
 st.sidebar.checkbox("Quantités entières", value=True, disabled=True)
 seed_value = st.sidebar.number_input("Seed aléatoire", min_value=0, value=42, step=1)
 
@@ -1007,7 +1149,7 @@ with tab1:
 with tab2:
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown(f'<div class="section-title">Génération - {selected_section}</div>', unsafe_allow_html=True)
-    st.markdown('<div class="small-text">La génération se fait avec quantités entières et CA exact si possible.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="small-text">Répartition métier plus réaliste + ajustement exact pour respecter le CA annuel.</div>', unsafe_allow_html=True)
 
     if st.button("⚙️ Générer les quantités", type="primary", use_container_width=True):
         try:
@@ -1024,7 +1166,8 @@ with tab2:
                 controls = []
 
                 for idx, y in enumerate(YEARS):
-                    detail_df, total_generated = solve_exact_integer_quantities(
+                    detail_df, total_generated = generate_realistic_year(
+                        section_name=selected_section,
                         items_df=items_df,
                         ca_target=ca_dict[y],
                         seed=seed_value + idx
@@ -1057,8 +1200,7 @@ with tab3:
     if results_key not in st.session_state:
         st.info("Génère d’abord les résultats.")
     else:
-        controls_df = format_df_display(st.session_state[controls_key]).copy()
-        controls_df = add_line_numbers(controls_df)
+        controls_df = add_line_numbers(format_df_display(st.session_state[controls_key]))
         all_results = st.session_state[results_key]
         all_monthly = st.session_state[monthly_key]
 
