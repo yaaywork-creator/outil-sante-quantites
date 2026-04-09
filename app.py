@@ -1,6 +1,5 @@
 import io
 import math
-import random
 from datetime import datetime
 
 import numpy as np
@@ -24,6 +23,7 @@ from reportlab.platypus import (
     Paragraph,
     Spacer,
     PageBreak,
+    KeepTogether,
 )
 
 # =========================================================
@@ -867,32 +867,51 @@ def dataframe_to_pdf_data(df):
             )
     return [temp.columns.tolist()] + temp.values.tolist()
 
-def split_dataframe_for_pdf(df, max_rows=12):
-    if df.empty:
-        return [df]
-    chunks = []
-    for start in range(0, len(df), max_rows):
-        chunks.append(df.iloc[start:start + max_rows].copy())
-    return chunks
-
-def build_pdf_table(df, header_color="#123A64", body_color="#F7F4EF", font_size=8.2, col_widths=None):
+def build_pdf_table(
+    df,
+    header_color="#123A64",
+    body_color="#F7F4EF",
+    font_size=8.2,
+    col_widths=None,
+    left_align_cols=None,
+    top_bottom_padding=3,
+    split_by_row=0
+):
     data = dataframe_to_pdf_data(df)
-    tbl = Table(data, repeatRows=1, colWidths=col_widths)
-    tbl.setStyle(TableStyle([
+    tbl = Table(data, repeatRows=1, colWidths=col_widths, splitByRow=split_by_row)
+
+    style_cmds = [
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(header_color)),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), font_size),
         ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor(body_color)),
-        ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#9AA7B6")),
+        ("GRID", (0, 0), (-1, -1), 0.30, colors.HexColor("#9AA7B6")),
         ("ALIGN", (0, 0), (-1, -1), "CENTER"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 4),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-    ]))
+        ("LEFTPADDING", (0, 0), (-1, -1), 2.2),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 2.2),
+        ("TOPPADDING", (0, 0), (-1, -1), top_bottom_padding),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), top_bottom_padding),
+    ]
+
+    if left_align_cols:
+        for col_idx in left_align_cols:
+            style_cmds.append(("ALIGN", (col_idx, 0), (col_idx, -1), "LEFT"))
+
+    tbl.setStyle(TableStyle(style_cmds))
     return tbl
+
+def build_year_recap_table(year_name, ca_target, detail_df, monthly_df):
+    recap_df = pd.DataFrame([
+        {"Indicateur": "Année", "Valeur": year_name},
+        {"Indicateur": "CA cible", "Valeur": float(ca_target)},
+        {"Indicateur": "CA généré", "Valeur": float(detail_df["CA Total"].sum())},
+        {"Indicateur": "Écart", "Valeur": float(detail_df["CA Total"].sum()) - float(ca_target)},
+        {"Indicateur": "Quantité totale", "Valeur": float(detail_df["Qté Totale"].sum())},
+        {"Indicateur": "CA moyen mensuel", "Valeur": float(monthly_df["CA Mensuel"].mean())},
+    ])
+    return recap_df
 
 def export_pdf(section_name, ca_dict, all_results, all_monthly):
     output = io.BytesIO()
@@ -900,10 +919,10 @@ def export_pdf(section_name, ca_dict, all_results, all_monthly):
     doc = SimpleDocTemplate(
         output,
         pagesize=landscape(A4),
-        leftMargin=0.8 * cm,
-        rightMargin=0.8 * cm,
-        topMargin=0.8 * cm,
-        bottomMargin=0.8 * cm,
+        leftMargin=0.55 * cm,
+        rightMargin=0.55 * cm,
+        topMargin=0.55 * cm,
+        bottomMargin=0.55 * cm,
     )
 
     styles = getSampleStyleSheet()
@@ -911,50 +930,54 @@ def export_pdf(section_name, ca_dict, all_results, all_monthly):
         "title_style",
         parent=styles["Title"],
         fontName="Helvetica-Bold",
-        fontSize=18,
+        fontSize=16,
         textColor=colors.HexColor("#081A32"),
-        spaceAfter=8,
+        spaceAfter=4,
+        leading=18,
     )
     sub_style = ParagraphStyle(
         "sub_style",
         parent=styles["Heading2"],
         fontName="Helvetica-Bold",
-        fontSize=12,
+        fontSize=10.2,
         textColor=colors.HexColor("#123A64"),
-        spaceAfter=6,
-        spaceBefore=6,
+        spaceAfter=3,
+        spaceBefore=2,
+        leading=12,
     )
     normal_style = ParagraphStyle(
         "normal_style",
         parent=styles["Normal"],
         fontName="Helvetica",
-        fontSize=9,
-        leading=11,
+        fontSize=8,
+        leading=9,
         textColor=colors.HexColor("#202B37")
     )
     small_style = ParagraphStyle(
         "small_style",
         parent=styles["Normal"],
         fontName="Helvetica",
-        fontSize=8,
-        leading=10,
+        fontSize=7,
+        leading=8,
         textColor=colors.HexColor("#475467")
     )
 
     elements = []
+
+    # =========================
+    # PAGE 1
+    # =========================
     elements.append(Paragraph("EDDAQAQ EXPERTISES", title_style))
     elements.append(Paragraph(f"Rapport structuré - {section_name}", sub_style))
     elements.append(Paragraph(f"Généré le {datetime.now().strftime('%d/%m/%Y à %H:%M')}", normal_style))
-    elements.append(Spacer(1, 0.25 * cm))
+    elements.append(Spacer(1, 0.12 * cm))
 
     ca_df = pd.DataFrame({
         "N°": range(1, len(YEARS) + 1),
         "Année": YEARS,
         "CA cible": [float(ca_dict[y]) for y in YEARS]
     })
-    elements.append(Paragraph("1. CA cible par année", sub_style))
-    elements.append(build_pdf_table(ca_df, header_color="#081A32", body_color="#F7F4EF", font_size=8.8))
-    elements.append(Spacer(1, 0.35 * cm))
+    ca_df.loc[len(ca_df)] = ["", "TOTAL", float(sum(ca_dict[y] for y in YEARS))]
 
     global_df = pd.DataFrame({
         "N°": range(1, len(YEARS) + 1),
@@ -963,58 +986,124 @@ def export_pdf(section_name, ca_dict, all_results, all_monthly):
         "CA généré": [float(all_results[y]["CA Total"].sum()) for y in YEARS],
         "Écart": [float(all_results[y]["CA Total"].sum()) - float(ca_dict[y]) for y in YEARS]
     })
-    elements.append(Paragraph("2. Contrôle global", sub_style))
-    elements.append(build_pdf_table(global_df, header_color="#17375F", body_color="#F8F5EF", font_size=8.8))
-    elements.append(PageBreak())
+    global_df.loc[len(global_df)] = [
+        "",
+        "TOTAL",
+        float(sum(ca_dict[y] for y in YEARS)),
+        float(sum(float(all_results[y]["CA Total"].sum()) for y in YEARS)),
+        float(sum(float(all_results[y]["CA Total"].sum()) - float(ca_dict[y]) for y in YEARS)),
+    ]
 
+    page1_block = []
+    page1_block.append(Paragraph("1. CA cible par année", sub_style))
+    page1_block.append(
+        build_pdf_table(
+            ca_df,
+            header_color="#081A32",
+            body_color="#F7F4EF",
+            font_size=8.4,
+            col_widths=[1.1 * cm, 6.4 * cm, 5.2 * cm],
+            left_align_cols=[1]
+        )
+    )
+    page1_block.append(Spacer(1, 0.18 * cm))
+    page1_block.append(Paragraph("2. Contrôle global", sub_style))
+    page1_block.append(
+        build_pdf_table(
+            global_df,
+            header_color="#17375F",
+            body_color="#F8F5EF",
+            font_size=8.0,
+            col_widths=[1.0 * cm, 5.1 * cm, 4.3 * cm, 4.3 * cm, 3.8 * cm],
+            left_align_cols=[1]
+        )
+    )
+
+    elements.append(KeepTogether(page1_block))
+
+    # =========================
+    # PAGES 2+
+    # =========================
     for i, y in enumerate(YEARS, start=1):
+        elements.append(PageBreak())
+
         detail_df = add_line_numbers(all_results[y]).copy()
         monthly_df = add_line_numbers(all_monthly[y]).copy()
 
-        elements.append(Paragraph(f"{y} - Synthèse", sub_style))
-        recap = (
-            f"CA cible : <b>{money(ca_dict[y])}</b> &nbsp;&nbsp;|&nbsp;&nbsp; "
-            f"CA généré : <b>{money(detail_df['CA Total'].sum())}</b> &nbsp;&nbsp;|&nbsp;&nbsp; "
-            f"Quantité totale : <b>{money(detail_df['Qté Totale'].sum())}</b>"
-        )
-        elements.append(Paragraph(recap, normal_style))
-        elements.append(Spacer(1, 0.15 * cm))
+        recap_df = build_year_recap_table(y, ca_dict[y], detail_df, monthly_df)
 
-        monthly_table = build_pdf_table(
-            monthly_df,
-            header_color="#123A64",
-            body_color="#F7F4EF",
-            font_size=8.4,
-            col_widths=[1.0 * cm, 5.6 * cm, 4.0 * cm, 4.5 * cm]
-        )
-        elements.append(Paragraph("Synthèse mensuelle", small_style))
-        elements.append(monthly_table)
-        elements.append(Spacer(1, 0.25 * cm))
+        # Table synthèse compacte
+        synth_left = monthly_df[["N°", "Mois", "Quantité Totale", "CA Mensuel"]].copy()
+        synth_right = recap_df.copy()
 
+        elements.append(Paragraph(f"{y} - Synthèse et détail", sub_style))
+        elements.append(Paragraph(
+            f"Cette page contient la synthèse mensuelle et le détail complet de {y}.",
+            small_style
+        ))
+        elements.append(Spacer(1, 0.08 * cm))
+
+        synth_cols = [
+            build_pdf_table(
+                synth_left,
+                header_color="#123A64",
+                body_color="#F7F4EF",
+                font_size=6.8,
+                col_widths=[0.7 * cm, 3.2 * cm, 2.7 * cm, 3.2 * cm],
+                left_align_cols=[1],
+                top_bottom_padding=1,
+                split_by_row=0
+            ),
+            build_pdf_table(
+                synth_right,
+                header_color="#0E4B5A",
+                body_color="#F6FAFB",
+                font_size=6.8,
+                col_widths=[3.0 * cm, 3.3 * cm],
+                left_align_cols=[0],
+                top_bottom_padding=1,
+                split_by_row=0
+            )
+        ]
+
+        synth_wrapper = Table(
+            [[synth_cols[0], synth_cols[1]]],
+            colWidths=[10.2 * cm, 6.4 * cm]
+        )
+        synth_wrapper.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+
+        # Détail complet de l'année sur une seule page
         detail_cols = ["N°", "Acte / Examen", "Prix Unitaire"] + [f"Qté {m}" for m in MONTHS] + ["Qté Totale", "CA Total"]
         detail_pdf_df = detail_df[detail_cols].copy()
-        chunks = split_dataframe_for_pdf(detail_pdf_df, max_rows=12)
 
-        for idx_chunk, chunk in enumerate(chunks, start=1):
-            if idx_chunk > 1:
-                elements.append(PageBreak())
-                elements.append(Paragraph(f"{y} - Détail complet (suite {idx_chunk})", sub_style))
-            else:
-                elements.append(Paragraph("Détail complet des lignes", small_style))
+        # largeur compacte pour faire tenir une année entière sur une page
+        detail_col_widths = [0.55 * cm, 4.35 * cm, 1.35 * cm] + [0.88 * cm] * 12 + [1.15 * cm, 1.55 * cm]
 
-            col_widths = [0.8 * cm, 4.6 * cm, 1.7 * cm] + [1.1 * cm] * 12 + [1.5 * cm, 2.0 * cm]
-            detail_table = build_pdf_table(
-                chunk,
-                header_color="#C99A67",
-                body_color="#FBF7F2",
-                font_size=6.7,
-                col_widths=col_widths
-            )
-            elements.append(detail_table)
-            elements.append(Spacer(1, 0.2 * cm))
+        detail_table = build_pdf_table(
+            detail_pdf_df,
+            header_color="#C99A67",
+            body_color="#FBF7F2",
+            font_size=5.2,
+            col_widths=detail_col_widths,
+            left_align_cols=[1],
+            top_bottom_padding=1,
+            split_by_row=0
+        )
 
-        if i < len(YEARS):
-            elements.append(PageBreak())
+        year_block = [
+            synth_wrapper,
+            Spacer(1, 0.10 * cm),
+            Paragraph("Détail complet des lignes", small_style),
+            detail_table
+        ]
+
+        elements.append(KeepTogether(year_block))
 
     doc.build(elements)
     output.seek(0)
@@ -1328,7 +1417,7 @@ with tab4:
             st.markdown(
                 f"""
                 <div class="kpi-note">
-                    Export prêt pour <b>{selected_section}</b> : synthèse globale, synthèse mensuelle et détail complet.
+                    Export prêt pour <b>{selected_section}</b> : page 1 contrôle global, puis une page par année.
                 </div>
                 """,
                 unsafe_allow_html=True
